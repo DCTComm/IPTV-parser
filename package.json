@@ -9,7 +9,8 @@
     "poll": "node src/main.js --loop",
     "backfill-mail": "node src/main.js --once --days 7",
     "setup-sheets": "node scripts/setupSheets.js",
-    "auth": "node scripts/auth.js"
+    "auth": "node scripts/auth.js",
+    "show-refresh-token": "node scripts/showRefreshToken.js"
   },
   "engines": {
     "node": ">=18"

@@ -12,6 +12,7 @@ import {
   ZOHO_CLIENT_ID,
   ZOHO_CLIENT_SECRET,
   ZOHO_REDIRECT_URI,
+  ZOHO_REFRESH_TOKEN,
 } from "./config.js";
 
 let tokenCache = null;
@@ -26,7 +27,13 @@ async function loadTokenFile() {
 }
 
 async function saveTokenFile(token) {
-  await fs.writeFile(TOKEN_PATH, JSON.stringify(token, null, 2), "utf8");
+  try {
+    await fs.writeFile(TOKEN_PATH, JSON.stringify(token, null, 2), "utf8");
+  } catch (error) {
+    // Read-only or ephemeral filesystem (containers). The in-memory cache
+    // carries the process; a restart re-bootstraps from ZOHO_REFRESH_TOKEN.
+    console.warn(`Could not persist token to ${TOKEN_PATH}: ${error.message}`);
+  }
 }
 
 async function exchangeCodeForToken(code) {
@@ -90,12 +97,22 @@ async function openBrowser(url) {
   });
 }
 
+/** Generous enough to cover email/2FA verification during Zoho login. */
+const OAUTH_TIMEOUT_MS = 15 * 60 * 1000;
+
 async function waitForOAuthCode(authUrl) {
   const redirectUrl = new URL(ZOHO_REDIRECT_URI);
   const port = Number(redirectUrl.port || 80);
   const pathname = redirectUrl.pathname;
 
   return new Promise((resolve, reject) => {
+    let timeoutHandle;
+    const settle = (fn, value) => {
+      clearTimeout(timeoutHandle);
+      server.close();
+      fn(value);
+    };
+
     const server = http.createServer((req, res) => {
       const reqUrl = new URL(req.url || "/", ZOHO_REDIRECT_URI);
       if (reqUrl.pathname !== pathname) {
@@ -110,8 +127,7 @@ async function waitForOAuthCode(authUrl) {
       if (error) {
         res.writeHead(400, { "Content-Type": "text/html" });
         res.end(`<h1>Authorization failed</h1><p>${error}</p>`);
-        server.close();
-        reject(new Error(error));
+        settle(reject, new Error(error));
         return;
       }
 
@@ -125,11 +141,10 @@ async function waitForOAuthCode(authUrl) {
       res.end(
         "<h1>Authorization successful</h1><p>You can close this tab and return to the terminal.</p>"
       );
-      server.close();
-      resolve(code);
+      settle(resolve, code);
     });
 
-    server.on("error", reject);
+    server.on("error", (error) => settle(reject, error));
 
     server.listen(port, async () => {
       console.log(`Listening for OAuth callback on ${ZOHO_REDIRECT_URI}`);
@@ -137,10 +152,14 @@ async function waitForOAuthCode(authUrl) {
       await openBrowser(authUrl.toString());
     });
 
-    setTimeout(() => {
-      server.close();
-      reject(new Error("OAuth timed out after 5 minutes. Run the command again."));
-    }, 5 * 60 * 1000);
+    timeoutHandle = setTimeout(() => {
+      settle(
+        reject,
+        new Error(
+          `OAuth timed out after ${OAUTH_TIMEOUT_MS / 60000} minutes. Run the command again.`
+        )
+      );
+    }, OAUTH_TIMEOUT_MS);
   });
 }
 
@@ -191,8 +210,21 @@ export async function getAccessToken() {
     return tokenCache.access_token;
   }
 
-  let token = await loadTokenFile();
+  // Reuse the cached token so a container without token.json doesn't refresh
+  // on every single API call.
+  let token = tokenCache || (await loadTokenFile());
+  if (!token && ZOHO_REFRESH_TOKEN) {
+    token = { refresh_token: ZOHO_REFRESH_TOKEN };
+  }
+
   if (!token) {
+    if (!process.stdin.isTTY) {
+      throw new Error(
+        "No Zoho credentials available. Set ZOHO_REFRESH_TOKEN, or point TOKEN_PATH " +
+          `at a persistent file (currently ${TOKEN_PATH}). Interactive login needs a ` +
+          'terminal — run "npm run auth" locally and copy the refresh token.'
+      );
+    }
     token = await authorizeInteractive();
   } else if (!token.expires_at || token.expires_at <= Date.now() + 60_000) {
     const refreshed = await refreshAccessToken(token.refresh_token);

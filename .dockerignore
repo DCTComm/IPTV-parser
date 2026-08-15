@@ -1,0 +1,10 @@
+node_modules
+.git
+.gitignore
+.env
+.env.example
+token.json
+credentials.json
+README.md
+Dockerfile
+.dockerignore
