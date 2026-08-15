@@ -121,7 +121,9 @@ export function parseInvoicePaid(text, meta) {
 }
 
 export function parseInvoiceUpdate(text, meta) {
-  const invoiceNumber = extractInvoiceNumber(text);
+  // PayPal puts the number only in the subject for this template
+  const invoiceNumber =
+    extractInvoiceNumber(text) || extractInvoiceNumber(meta.subject || "");
   let recipientEmail = "";
   let amountDue = "";
   let currency = "";

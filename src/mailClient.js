@@ -209,9 +209,10 @@ export class MailClient {
     await zohoRequest(MAIL_API_URL, `/api/accounts/${accountId}/updatemessage`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
+      // IDs exceed Number.MAX_SAFE_INTEGER — keep them as strings or they corrupt
       body: JSON.stringify({
         mode: "markAsRead",
-        messageId: [Number(messageId)],
+        messageId: [String(messageId)],
       }),
     });
 
@@ -221,10 +222,10 @@ export class MailClient {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "applyLabel",
-          messageId: [Number(messageId)],
-          labelId: [labelId],
+          messageId: [String(messageId)],
+          labelId: [String(labelId)],
           isFolderSpecific: true,
-          folderId: Number(folderId),
+          folderId: String(folderId),
         }),
       });
     }

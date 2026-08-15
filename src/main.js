@@ -98,7 +98,15 @@ export async function runOnce({
   const messages = await mail.listMessages({ searchKey, days });
   const results = [];
   for (const messageRef of messages) {
-    results.push(await processMessage(mail, sheets, messageRef, { dryRun }));
+    try {
+      results.push(await processMessage(mail, sheets, messageRef, { dryRun }));
+    } catch (error) {
+      // Leave the message unlabelled so the next run retries it; sheet dedupe
+      // stops it being appended twice if the row already landed.
+      results.push(
+        `error: ${messageRef.subject.slice(0, 60)} -> ${error.message}`
+      );
+    }
   }
   return results;
 }
@@ -109,9 +117,15 @@ export async function runLoop({
   days = MAIL_LOOKBACK_DAYS,
 } = {}) {
   while (true) {
-    const results = await runOnce({ dryRun, days });
-    for (const line of results) console.log(line);
-    if (!results.length) console.log("No new messages.");
+    try {
+      const results = await runOnce({ dryRun, days });
+      for (const line of results) console.log(line);
+      if (!results.length) console.log("No new messages.");
+    } catch (error) {
+      // A whole cycle failed (network, token refresh, Zoho outage). Keep the
+      // poller alive — the next cycle picks up whatever was missed.
+      console.error(`[${new Date().toISOString()}] cycle failed: ${error.message}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, interval * 1000));
   }
 }
