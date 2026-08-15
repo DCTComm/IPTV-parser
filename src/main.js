@@ -116,7 +116,15 @@ export async function runLoop({
   interval = POLL_INTERVAL_SECONDS,
   days = MAIL_LOOKBACK_DAYS,
 } = {}) {
+  // Print before any network call so the logs prove the process booted, even if
+  // something kills the container mid-cycle.
+  console.log(
+    `poller started — interval ${interval}s, lookback ${days}d, node ${process.version}, pid ${process.pid}`
+  );
+
   while (true) {
+    const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    console.log(`[${new Date().toISOString()}] cycle start (rss ${rssMb} MB)`);
     try {
       const results = await runOnce({ dryRun, days });
       for (const line of results) console.log(line);
