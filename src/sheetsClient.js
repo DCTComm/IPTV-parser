@@ -6,6 +6,11 @@ import {
 } from "./config.js";
 import { zohoFormRequest } from "./zohoApi.js";
 
+const EXTRA_WORKSHEETS_BY_EMAIL_TYPE = {
+  invoice_sent: "Sent",
+  invoice_paid: "Paid",
+};
+
 function escapeCsvValue(value) {
   const text = value == null ? "" : String(value);
   if (/[",\n\r]/.test(text)) {
@@ -62,6 +67,20 @@ export class SheetsClient {
     }
 
     await this.ensureHeaders(this.worksheetName, MASTER_COLUMNS);
+
+    for (const worksheetName of Object.values(EXTRA_WORKSHEETS_BY_EMAIL_TYPE)) {
+      if (!names.includes(worksheetName)) {
+        await this.createWorksheet(worksheetName);
+      }
+      await this.ensureHeaders(worksheetName, MASTER_COLUMNS);
+    }
+  }
+
+  async createWorksheet(worksheetName) {
+    await this.sheetRequest({
+      method: "worksheet.insert",
+      worksheet_name: worksheetName,
+    });
   }
 
   async ensureHeaders(worksheetName, headers) {
@@ -84,6 +103,15 @@ export class SheetsClient {
       worksheet_name: this.worksheetName,
       data: csv,
     });
+
+    const extraWorksheetName = EXTRA_WORKSHEETS_BY_EMAIL_TYPE[row.email_type];
+    if (extraWorksheetName) {
+      await this.sheetRequest({
+        method: "worksheet.csvdata.append",
+        worksheet_name: extraWorksheetName,
+        data: csv,
+      });
+    }
 
     if (this.duplicateKeyCache) {
       this.duplicateKeyCache.add(duplicateKey(row));

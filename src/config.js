@@ -33,7 +33,8 @@ export const POLL_INTERVAL_SECONDS = Number(
 export const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS || "30000");
 export const FETCH_RETRIES = Number(process.env.FETCH_RETRIES || "3");
 export const TOKEN_PATH = path.resolve(
-  process.env.TOKEN_PATH || path.join(ROOT_DIR, "token.json")
+  ROOT_DIR,
+  process.env.TOKEN_PATH || "token.json"
 );
 
 export const SCOPES = [

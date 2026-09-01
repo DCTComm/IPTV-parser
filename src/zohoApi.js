@@ -36,13 +36,34 @@ async function saveTokenFile(token) {
   }
 }
 
+export function extractOAuthCode(input) {
+  if (!input) return "";
+  const trimmed = String(input).trim();
+  if (trimmed.includes("code=")) {
+    try {
+      const url = new URL(
+        trimmed.startsWith("http")
+          ? trimmed
+          : `http://localhost${trimmed.startsWith("/") || trimmed.startsWith("?") ? "" : "/"}${trimmed}`
+      );
+      const code = url.searchParams.get("code");
+      if (code) return code.trim();
+    } catch {
+      const match = trimmed.match(/[?&]code=([^&]+)/);
+      if (match) return decodeURIComponent(match[1]).trim();
+    }
+  }
+  return trimmed;
+}
+
 async function exchangeCodeForToken(code) {
+  const cleanCode = extractOAuthCode(code);
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     client_id: ZOHO_CLIENT_ID,
     client_secret: ZOHO_CLIENT_SECRET,
     redirect_uri: ZOHO_REDIRECT_URI,
-    code,
+    code: cleanCode,
   });
 
   const response = await fetch(`${ACCOUNTS_URL}/oauth/v2/token`, {
@@ -170,7 +191,7 @@ async function promptForCodeManually() {
   return code.trim();
 }
 
-async function authorizeInteractive() {
+export async function authorizeInteractive() {
   if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET) {
     throw new Error("ZOHO_CLIENT_ID and ZOHO_CLIENT_SECRET must be set in .env");
   }
@@ -186,8 +207,8 @@ async function authorizeInteractive() {
   let code;
   try {
     code = await waitForOAuthCode(authUrl.toString());
-  } catch {
-    console.log("\nCould not capture OAuth callback automatically.");
+  } catch (err) {
+    console.log(`\nCould not capture OAuth callback automatically (${err.message || err}).`);
     console.log("Open this URL, approve access, then paste the code from the redirect URL:\n");
     console.log(authUrl.toString());
     code = await promptForCodeManually();
@@ -213,16 +234,16 @@ export async function getAccessToken() {
   // Reuse the cached token so a container without token.json doesn't refresh
   // on every single API call.
   let token = tokenCache || (await loadTokenFile());
-  if (!token && ZOHO_REFRESH_TOKEN) {
-    token = { refresh_token: ZOHO_REFRESH_TOKEN };
+  if ((!token || !token.refresh_token) && ZOHO_REFRESH_TOKEN) {
+    token = { ...token, refresh_token: ZOHO_REFRESH_TOKEN };
   }
 
   if (!token) {
     if (!process.stdin.isTTY) {
       throw new Error(
         "No Zoho credentials available. Set ZOHO_REFRESH_TOKEN, or point TOKEN_PATH " +
-          `at a persistent file (currently ${TOKEN_PATH}). Interactive login needs a ` +
-          'terminal — run "npm run auth" locally and copy the refresh token.'
+        `at a persistent file (currently ${TOKEN_PATH}). Interactive login needs a ` +
+        'terminal — run "npm run auth" locally and copy the refresh token.'
       );
     }
     token = await authorizeInteractive();
@@ -269,6 +290,35 @@ function formatNetworkError(error, url) {
   );
 }
 
+function formatZohoError(data, response, context = "") {
+  const rawMsg =
+    data.error_message ||
+    data.message ||
+    data.error ||
+    data.status?.description ||
+    `Zoho API error (${response.status})`;
+
+  const isAuthError =
+    response.status === 401 ||
+    response.status === 403 ||
+    (typeof rawMsg === "string" &&
+      (rawMsg.toLowerCase().includes("not authorized") ||
+        rawMsg.toLowerCase().includes("invalid_token") ||
+        rawMsg.toLowerCase().includes("access denied")));
+
+  if (isAuthError) {
+    return (
+      `${rawMsg}${context ? ` [${context}]` : ""}\n` +
+      `[Zoho Authorization Diagnosis]:\n` +
+      `  • Missing OAuth Scopes: If scopes were changed recently, run 'npm run auth' to reauthorize. (Refresh tokens do not automatically gain new scopes without interactive re-consent).\n` +
+      `  • Account Mismatch / Permissions: Ensure the Zoho account authorized via 'npm run auth' owns or has write permissions on the resource (e.g. ZOHO_SHEET_RESOURCE_ID or Zoho Mail).\n` +
+      `  • Sheet Resource ID: Verify ZOHO_SHEET_RESOURCE_ID in .env is correct and accessible.`
+    );
+  }
+
+  return `${rawMsg}${context ? ` [${context}]` : ""}`;
+}
+
 async function fetchWithRetry(url, options = {}) {
   let lastError;
   for (let attempt = 1; attempt <= FETCH_RETRIES; attempt++) {
@@ -308,13 +358,7 @@ export async function zohoRequest(baseUrl, path, options = {}) {
   }
 
   if (isZohoFailure(data, response)) {
-    const message =
-      data.error_message ||
-      data.message ||
-      data.error ||
-      data.status?.description ||
-      `Zoho API error (${response.status})`;
-    throw new Error(message);
+    throw new Error(formatZohoError(data, response, path));
   }
 
   return data;
@@ -351,13 +395,8 @@ export async function zohoFormRequest(baseUrl, resourcePath, params) {
   }
 
   if (isZohoFailure(data, response)) {
-    const method = params?.method ? ` [${params.method}]` : "";
-    const message =
-      data.error_message ||
-      data.message ||
-      data.error ||
-      `Zoho API error (${response.status})${method}`;
-    throw new Error(message);
+    const method = params?.method ? `method=${params.method}` : "";
+    throw new Error(formatZohoError(data, response, method));
   }
 
   return data;

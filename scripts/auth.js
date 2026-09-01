@@ -1,4 +1,5 @@
-import { getAccessToken } from "../src/zohoApi.js";
+import { authorizeInteractive } from "../src/zohoApi.js";
 
-await getAccessToken();
+await authorizeInteractive();
 console.log("Zoho authorization complete. token.json has been saved.");
+
