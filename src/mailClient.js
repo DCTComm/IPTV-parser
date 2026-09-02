@@ -1,9 +1,12 @@
 import {
+  HISTORIC_DAYS,
   MAIL_API_URL,
   MAIL_SEARCH_KEY,
   PAYPAL_SENDER,
   PROCESSED_LABEL,
+  ZOHO_FETCH_TAGGED,
   ZOHO_MAIL_ACCOUNT_ID,
+  ZOHO_MAIL_TAG,
 } from "./config.js";
 import { zohoRequest } from "./zohoApi.js";
 
@@ -77,19 +80,32 @@ export class MailClient {
 
   async listMessages({
     searchKey = MAIL_SEARCH_KEY,
-    days,
+    days = HISTORIC_DAYS,
     limit = 200,
     maxResults = 1000,
+    fetchTagged = ZOHO_FETCH_TAGGED,
   } = {}) {
+    if (fetchTagged && (!ZOHO_MAIL_TAG || ZOHO_MAIL_TAG.trim() === "")) {
+      throw new Error(
+        "ZOHO_MAIL_TAG is required when ZOHO_FETCH_TAGGED=true."
+      );
+    }
+
     const accountId = await this.getAccountId();
     const fullSearchKey = buildSearchKey(searchKey);
     const cutoffMs = getLookbackCutoffMs(days);
     const processedLabelId = await this.getProcessedLabelId();
     const matches = [];
     let start = 1;
+    let totalCandidateCount = 0;
+    let taggedCount = 0;
+    let skippedUntaggedCount = 0;
+    let skippedTaggedCount = 0;
+    let skippedOlderCount = 0;
+    let skippedSenderCount = 0;
 
     console.log(
-      `[DEBUG] Active searchKey: "${fullSearchKey || "(none - fetching all)"}" | Lookback: ${days ? `${days} day(s)` : "all time"}`
+      `[DEBUG] Active searchKey: "${fullSearchKey || "(none - fetching all)"}" | Lookback: ${days ? `${days} day(s)` : "all time"} | Mode: ${fetchTagged ? `Tagged Only (only "${ZOHO_MAIL_TAG}")` : "All Matching (no tag filter)"} | Tag: "${ZOHO_MAIL_TAG}"`
     );
 
     while (matches.length < maxResults) {
@@ -130,16 +146,36 @@ export class MailClient {
 
         if (!isWithinLookback(message, cutoffMs)) {
           console.log(`[DEBUG]   └─ Skipped: received date is outside lookback window (${days} days)`);
+          skippedOlderCount++;
           reachedOlderMessages = true;
           continue;
         }
         if (!matchesPaypalSender(from)) {
           console.log(`[DEBUG]   └─ Skipped: sender does not match PAYPAL_SENDER ("${PAYPAL_SENDER}")`);
+          skippedSenderCount++;
           continue;
         }
-        if (hasProcessedLabel(message, processedLabelId)) {
-          console.log(`[DEBUG]   └─ Skipped: already has processed label (${PROCESSED_LABEL})`);
-          continue;
+
+        totalCandidateCount++;
+        const hasTag = hasProcessedLabel(message, processedLabelId);
+
+        if (fetchTagged) {
+          if (!hasTag) {
+            console.log(
+              `[DEBUG]   └─ Skipped: missing required tag ("${ZOHO_MAIL_TAG}") — ZOHO_FETCH_TAGGED=true`
+            );
+            skippedUntaggedCount++;
+            continue;
+          }
+          taggedCount++;
+        } else {
+          if (hasTag) {
+            console.log(
+              `[DEBUG]   └─ Skipped: already has tag ("${ZOHO_MAIL_TAG}") — ZOHO_FETCH_TAGGED=false`
+            );
+            skippedTaggedCount++;
+            continue;
+          }
         }
 
         matches.push({
@@ -158,7 +194,18 @@ export class MailClient {
       start += limit;
     }
 
-    console.log(`[DEBUG] Total matching messages found: ${matches.length}`);
+    matches.stats = {
+      candidateCount: totalCandidateCount,
+      taggedCount: fetchTagged ? taggedCount : totalCandidateCount - skippedTaggedCount,
+      skippedUntaggedCount,
+      skippedTaggedCount,
+      skippedOlderCount,
+      skippedSenderCount,
+    };
+
+    console.log(
+      `[DEBUG] Candidate emails within window: ${totalCandidateCount} (Matches to process: ${matches.length})`
+    );
     return matches;
   }
 

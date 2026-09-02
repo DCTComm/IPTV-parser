@@ -17,7 +17,7 @@ The **PayPal Email Parser** (`IPTV-parser`) is an automated backend integration 
 - **Rule-Based Template Classifier**: Accurately classifies emails into 10 discrete transaction and dispute categories.
 - **Deterministic Field Extraction**: Extracts transaction IDs, invoice numbers, monetary amounts, currency codes, customer details, chargeback fees, and deadlines via regex parsers.
 - **In-Memory & Sheet Deduplication**: Prevents duplicate entries using composite keys generated per transaction, invoice, or case ID.
-- **Worksheet Routing**: Automatically appends all events to a master ledger (`Sheet1`) while copying invoice creation events to `Sent` and payment events to `Paid`.
+- **Worksheet Routing**: Automatically appends all events to a master ledger (`All`) while copying invoice creation events to `Sent` and payment events to `Paid`.
 - **Read / Label Flagging**: Marks parsed emails as read in Zoho Mail and assigns a persistent tag (`paypal-parsed`) to prevent redundant ingestion.
 
 ### Technologies & External Services
@@ -74,7 +74,7 @@ The service operates on a unidirectional pipeline architecture:
 ┌──────────────────────────────────────────────────────────────┐
 │                 Deduplication & Cache Engine                 │
 │                  (src/sheetsClient.js)                       │
-│  - Evaluates duplicateKey(row) against Sheet1 records        │
+│  - Evaluates duplicateKey(row) against All records           │
 │  - Skips already-logged records                              │
 └──────────────────────────────┬───────────────────────────────┘
                                │
@@ -82,7 +82,7 @@ The service operates on a unidirectional pipeline architecture:
 ┌──────────────────────────────────────────────────────────────┐
 │                 Zoho Sheet Data API v2 Writer                │
 │                  (src/sheetsClient.js)                       │
-│  - Appends row to Master Worksheet (Sheet1)                  │
+│  - Appends row to Master Worksheet (All)                     │
 │  - Evaluates EXTRA_WORKSHEETS_BY_EMAIL_TYPE                  │
 │  - Copies to 'Sent' (if invoice_sent) or 'Paid' (if paid)    │
 └──────────────────────────────┬───────────────────────────────┘
@@ -141,7 +141,7 @@ The main application entry point is **[`src/main.js`](file:///e:/New%20folder%20
 - **`main()`**: Parses process arguments and determines execution mode (`--once` vs `--loop`).
 - **`runOnce({ dryRun, searchKey, days })`**:
   1. Instantiates `MailClient` and `SheetsClient`.
-  2. Ensures worksheets (`Sheet1`, `Sent`, `Paid`) and headers exist unless `dryRun` is set.
+  2. Ensures worksheets (`All`, `Sent`, `Paid`) and headers exist unless `dryRun` is set.
   3. Queries Zoho Mail for PayPal messages within the specified lookback days.
   4. Sequentially executes `processMessage()` on every matched email.
   5. Returns an array of execution status strings.
@@ -320,7 +320,7 @@ Managed by **[`src/sheetsClient.js`](file:///e:/New%20folder%20(3)/IPTV-parser/s
 ### Configuration
 - **Sheet API URL**: `https://sheet.zoho.com/api/v2/{resourceId}`
 - **Active Sheet Resource ID**: `44mjx056139c257ea451a84fc15a9ebf7019c`
-- **Primary Worksheet Name**: `Sheet1`
+- **Primary Worksheet Name**: `All`
 
 ### API Methods Used
 | Method Parameter | Operation | Scope Required |
@@ -341,7 +341,7 @@ email_date, subject, parsed_at, email_type, case_id, buyer_name, buyer_email, in
 ## 10. Worksheet Routing
 
 ### Production Routing Table
-| Email Event Type | Master Ledger (`Sheet1`) | Sub-Worksheet (`Sent`) | Sub-Worksheet (`Paid`) |
+| Email Event Type | Master Ledger (`All`) | Sub-Worksheet (`Sent`) | Sub-Worksheet (`Paid`) |
 | :--- | :---: | :---: | :---: |
 | `invoice_sent` | **YES** | **YES** | NO |
 | `invoice_paid` | **YES** | NO | **YES** |
@@ -356,10 +356,10 @@ email_date, subject, parsed_at, email_type, case_id, buyer_name, buyer_email, in
 
 ### Routing Implementation in `appendRow()`
 ```javascript
-// 1. Always append to Master Ledger (Sheet1)
+// 1. Always append to Master Ledger (All)
 await this.sheetRequest({
   method: "worksheet.csvdata.append",
-  worksheet_name: this.worksheetName, // "Sheet1"
+  worksheet_name: this.worksheetName, // "All"
   data: csv,
 });
 
@@ -387,10 +387,10 @@ Implemented in [`SheetsClient.duplicateKey()`](file:///e:/New%20folder%20(3)/IPT
 - **Fallback**: `sub:<email_date>|<subject>|<email_type>`
 
 ### Deduplication Process
-1. On first check, `getDuplicateKeys()` loads the latest 1,000 records from `Sheet1`.
+1. On first check, `getDuplicateKeys()` loads the latest 1,000 records from `All`.
 2. Generates composite keys for each record and stores them in a memory cache (`Set`).
 3. If an incoming row's `duplicateKey` exists in the cache:
-   - Writing to both `Sheet1` and `Sent`/`Paid` is skipped.
+   - Writing to both `All` and `Sent`/`Paid` is skipped.
    - Message is marked processed in Zoho Mail.
    - Console logs `skip duplicate: <subject> (<tab>)`.
 4. If unique, row is appended and its key is added to the in-memory cache.
@@ -434,7 +434,7 @@ node src/main.js --once --dry-run --days 7
 ### Dry Run Behavior
 - **Reads Zoho Mail**: **YES** (Fetches and inspects messages matching criteria).
 - **Classifies & Parses**: **YES** (Executes full classification and regex parsing).
-- **Checks Duplicates**: **YES** (Evaluates against existing `Sheet1` records).
+- **Checks Duplicates**: **YES** (Evaluates against existing `All` records).
 - **Writes to Zoho Sheet**: **NO** (Bypasses `ensureTabs()` and `appendRow()`).
 - **Modifies Zoho Mail**: **NO** (Does NOT apply labels or mark emails as read).
 
@@ -445,7 +445,7 @@ node src/main.js --once --dry-run --days 7
 | Script | Command | Purpose |
 | :--- | :--- | :--- |
 | `scripts/auth.js` | `npm run auth` | Initiates interactive OAuth authorization in browser, captures code, and saves `token.json`. |
-| `scripts/setupSheets.js` | `npm run setup-sheets` | Connects to `ZOHO_SHEET_RESOURCE_ID`, validates `Sheet1`, inserts `Sent` & `Paid` tabs, and writes 24 master column headers. |
+| `scripts/setupSheets.js` | `npm run setup-sheets` | Connects to `ZOHO_SHEET_RESOURCE_ID`, validates `All`, inserts `Sent` & `Paid` tabs, and writes 24 master column headers. |
 | `scripts/showRefreshToken.js`| `npm run show-refresh-token`| Extracts and prints `refresh_token` from `token.json` for environment variable injection in headless container environments (Coolify / Docker). |
 
 ---
@@ -463,7 +463,7 @@ Configured in `.env`:
 | `ZOHO_REFRESH_TOKEN` | Optional | `<REDACTED>` | Offline refresh token for headless container deployments |
 | `ZOHO_MAIL_ACCOUNT_ID` | Optional | *(Auto-discovered)* | Zoho Mail Account ID (auto-fetched if left blank) |
 | `ZOHO_SHEET_RESOURCE_ID`| Yes | `44mjx056139c257ea451a84fc15a9ebf7019c` | Active Zoho Sheet unique resource identifier |
-| `ZOHO_WORKSHEET_NAME` | Yes | `Sheet1` | Primary master ledger worksheet name |
+| `ZOHO_WORKSHEET_NAME` | Yes | `All` | Primary master ledger worksheet name |
 | `MAIL_SEARCH_KEY` | Yes | `sender:service@paypal.com` | Base search query for Zoho Mail message search |
 | `MAIL_LOOKBACK_DAYS` | Yes | `1` | Default search lookback window in days |
 | `PAYPAL_SENDER` | Yes | `service@paypal.com` | Filter to ensure incoming messages match PayPal sender |
@@ -477,7 +477,7 @@ Configured in `.env`:
 
 - **Sheet Resource ID**: `44mjx056139c257ea451a84fc15a9ebf7019c`
 - **Worksheet Tabs**:
-  1. **`Sheet1`**: Master Ledger. Contains every parsed email event chronologically.
+  1. **`All`**: Master Ledger. Contains every parsed email event chronologically.
   2. **`Sent`**: Outgoing invoices tab (`invoice_sent`).
   3. **`Paid`**: Customer payment receipts tab (`invoice_paid`).
 
@@ -528,8 +528,8 @@ Configured in `.env`:
 3. classifyEmail() matches "we sent your invoice" -> returns "invoice_sent"
 4. parseInvoiceSent() extracts invoice_number="INV-1001", amount="$100.00", recipient="client@example.com"
 5. duplicateKey() generates "inv:invoice_sent:INV-1001:2026-09-01"
-6. isDuplicate() checks Sheet1 -> false
-7. appendRow() writes row to Sheet1 AND Sent
+6. isDuplicate() checks All -> false
+7. appendRow() writes row to All AND Sent
 8. markProcessed() tags message with 'paypal-parsed' and marks as read
 ```
 
@@ -540,8 +540,8 @@ Configured in `.env`:
 3. classifyEmail() matches "paid for your invoice" -> returns "invoice_paid"
 4. parseInvoicePaid() extracts invoice_number="INV-1001", txn_id="4AB12345CD67890EF", amount_paid="$100.00"
 5. duplicateKey() generates "txn:4AB12345CD67890EF"
-6. isDuplicate() checks Sheet1 -> false
-7. appendRow() writes row to Sheet1 AND Paid
+6. isDuplicate() checks All -> false
+7. appendRow() writes row to All AND Paid
 8. markProcessed() tags message with 'paypal-parsed' and marks as read
 ```
 
@@ -601,12 +601,12 @@ The routing engine was verified live using `SheetsClient.appendRow()`:
 LIVE ROUTING VERIFICATION REPORT
 ==========================================
 TEST-SENT-001 (invoice_sent):
-  Sheet1 = YES (Row 2)
+  All    = YES (Row 2)
   Sent   = YES (Row 2)
   Paid   = NO
 
 TEST-PAID-001 (invoice_paid):
-  Sheet1 = YES (Row 3)
+  All    = YES (Row 3)
   Sent   = NO
   Paid   = YES (Row 2)
 ==========================================
@@ -620,7 +620,7 @@ TEST-PAID-001 (invoice_paid):
 | Issue / Improvement | Severity | Description | Recommendation |
 | :--- | :---: | :--- | :--- |
 | **CLI Argument Passing via NPM** | `LOW` | Running `npm start -- --days 7` passes `--` as an argument on some shells. | Use direct Node command `node src/main.js --once --days 7` or update `parseArgs` to skip literal `"--"`. |
-| **Duplicate Cache Record Limit** | `LOW` | `getDuplicateKeys()` fetches up to 1,000 records from `Sheet1`. | For long-running high-volume deployments, implement multi-page fetch or date-filtered duplicate queries. |
+| **Duplicate Cache Record Limit** | `LOW` | `getDuplicateKeys()` fetches up to 1,000 records from `All`. | For long-running high-volume deployments, implement multi-page fetch or date-filtered duplicate queries. |
 | **Label 401 Fallback** | `INFO` | If `ZohoMail.tags.ALL` scope is missing, label application logs a warning and falls back to mark-as-read. | Ensure all 5 scopes are selected during OAuth consent. |
 
 ---
@@ -633,10 +633,10 @@ TEST-PAID-001 (invoice_paid):
 | **Zoho OAuth** | **PASS** | Interactive consent + automatic refresh token rotation verified |
 | **Zoho Mail Integration** | **PASS** | Account lookup, message search, and lookback filters functioning |
 | **Zoho Sheet API v2** | **PASS** | Endpoints configured to `https://sheet.zoho.com/api/v2/{id}` |
-| **Master Ledger (`Sheet1`)** | **PASS** | Headers set (24 columns), sequential appending active |
+| **Master Ledger (`All`)** | **PASS** | Headers set (24 columns), sequential appending active |
 | **`Sent` Worksheet Routing** | **PASS** | Verified live write for `invoice_sent` records |
 | **`Paid` Worksheet Routing** | **PASS** | Verified live write for `invoice_paid` records |
-| **Duplicate Detection** | **PASS** | Composite keys evaluated against `Sheet1` prior to writes |
+| **Duplicate Detection** | **PASS** | Composite keys evaluated against `All` prior to writes |
 | **Email Parsers** | **PASS** | 10 regex-based parser modules operational |
 | **Polling System** | **PASS** | Single-pass (`--once`) and continuous loop (`--loop`) verified |
 | **Security Audit** | **PASS** | Secrets segregated into `.env` and `.gitignore`, no secrets in logs |
@@ -649,7 +649,7 @@ TEST-PAID-001 (invoice_paid):
 - **Is Zoho Mail working?** **YES** (Successfully queries mailbox without errors).
 - **Is Zoho Sheet working?** **YES** (Data API v2 write and fetch calls confirmed).
 - **Is the NEW Sheet being used?** **YES** (Resource ID: `44mjx056139c257ea451a84fc15a9ebf7019c`).
-- **Is `invoice_sent` correctly routed to `Sent`?** **YES** (Appends to `Sheet1` + `Sent`).
-- **Is `invoice_paid` correctly routed to `Paid`?** **YES** (Appends to `Sheet1` + `Paid`).
-- **Are duplicate records prevented?** **YES** (Deduplication engine evaluates `Sheet1` prior to writes).
+- **Is `invoice_sent` correctly routed to `Sent`?** **YES** (Appends to `All` + `Sent`).
+- **Is `invoice_paid` correctly routed to `Paid`?** **YES** (Appends to `All` + `Paid`).
+- **Are duplicate records prevented?** **YES** (Deduplication engine evaluates `All` prior to writes).
 - **Are there any critical issues?** **None**. All systems and integration points are healthy and operational.

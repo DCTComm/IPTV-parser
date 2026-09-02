@@ -60,8 +60,7 @@ export class SheetsClient {
     if (!names.includes(this.worksheetName)) {
       throw new Error(
         `Worksheet "${this.worksheetName}" not found in your Zoho Sheet. ` +
-          `Rename an existing tab to "${this.worksheetName}" (default is Sheet1) ` +
-          `or set ZOHO_WORKSHEET_NAME in .env to match an existing tab. ` +
+          `Set ZOHO_WORKSHEET_NAME in .env to match an existing tab in your Sheet. ` +
           `Found: ${names.join(", ") || "(none)"}`
       );
     }
@@ -121,32 +120,43 @@ export class SheetsClient {
   async getDuplicateKeys() {
     if (this.duplicateKeyCache) return this.duplicateKeyCache;
 
-    const result = await this.sheetRequest({
-      method: "worksheet.records.fetch",
-      worksheet_name: this.worksheetName,
-      header_row: 1,
-      render_option: "formatted",
-      records_start_index: 1,
-      is_case_sensitive: true,
-      column_names: [
-        "email_date",
-        "subject",
-        "email_type",
-        "txn_id",
-        "case_id",
-        "invoice_number",
-      ],
-      count: 1000,
-    });
+    try {
+      const result = await this.sheetRequest({
+        method: "worksheet.records.fetch",
+        worksheet_name: this.worksheetName,
+        header_row: 1,
+        render_option: "formatted",
+        records_start_index: 1,
+        is_case_sensitive: true,
+        column_names: [
+          "email_date",
+          "subject",
+          "email_type",
+          "txn_id",
+          "case_id",
+          "invoice_number",
+        ],
+        count: 1000,
+      });
 
-    const records = result?.records || result?.record_details || [];
-    const keys = new Set();
-    for (const record of records) {
-      const row = record.row_details || record;
-      keys.add(duplicateKey(row));
+      const records = result?.records || result?.record_details || [];
+      const keys = new Set();
+      for (const record of records) {
+        const row = record.row_details || record;
+        keys.add(duplicateKey(row));
+      }
+      this.duplicateKeyCache = keys;
+      return keys;
+    } catch (err) {
+      if (
+        String(err.message).toLowerCase().includes("does not exist") ||
+        String(err.message).toLowerCase().includes("not found")
+      ) {
+        this.duplicateKeyCache = new Set();
+        return this.duplicateKeyCache;
+      }
+      throw err;
     }
-    this.duplicateKeyCache = keys;
-    return keys;
   }
 
   async isDuplicate(_tabName, row) {

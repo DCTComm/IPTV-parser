@@ -23,12 +23,20 @@ export const SHEET_API_URL = `https://sheet.zoho.${ZOHO_DC}`;
 
 export const ZOHO_MAIL_ACCOUNT_ID = process.env.ZOHO_MAIL_ACCOUNT_ID || "";
 export const ZOHO_SHEET_RESOURCE_ID = process.env.ZOHO_SHEET_RESOURCE_ID || "";
-export const ZOHO_WORKSHEET_NAME = process.env.ZOHO_WORKSHEET_NAME || "Sheet1";
+export const ZOHO_WORKSHEET_NAME = process.env.ZOHO_WORKSHEET_NAME || "All";
 export const MAIL_SEARCH_KEY =
   process.env.MAIL_SEARCH_KEY || "sender:service@paypal.com";
-export const MAIL_LOOKBACK_DAYS = Number(process.env.MAIL_LOOKBACK_DAYS || "1");
+export const HISTORIC_DAYS = Number(
+  process.env.HISTORIC_DAYS || process.env.MAIL_LOOKBACK_DAYS || "30"
+);
+export const MAIL_LOOKBACK_DAYS = HISTORIC_DAYS;
 export const PAYPAL_SENDER = process.env.PAYPAL_SENDER || "service@paypal.com";
-export const PROCESSED_LABEL = process.env.PROCESSED_LABEL || "paypal-parsed";
+export const ZOHO_FETCH_TAGGED =
+  process.env.ZOHO_FETCH_TAGGED === "true" ||
+  process.env.ZOHO_FETCH_TAGGED === "1";
+export const ZOHO_MAIL_TAG =
+  process.env.ZOHO_MAIL_TAG || process.env.PROCESSED_LABEL || "paypal-parsed";
+export const PROCESSED_LABEL = ZOHO_MAIL_TAG;
 export const POLL_INTERVAL_SECONDS = Number(
   process.env.POLL_INTERVAL_SECONDS || "300"
 );

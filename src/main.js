@@ -1,5 +1,12 @@
 import { classifyEmail } from "./classifier.js";
-import { MAIL_LOOKBACK_DAYS, MAIL_SEARCH_KEY, POLL_INTERVAL_SECONDS } from "./config.js";
+import {
+  HISTORIC_DAYS,
+  MAIL_LOOKBACK_DAYS,
+  MAIL_SEARCH_KEY,
+  POLL_INTERVAL_SECONDS,
+  ZOHO_FETCH_TAGGED,
+  ZOHO_MAIL_TAG,
+} from "./config.js";
 import { MailClient } from "./mailClient.js";
 import { getEmailBody, normalizeText } from "./normalize.js";
 import { parseEmail } from "./parsers/index.js";
@@ -11,9 +18,10 @@ function parseArgs(argv) {
     loop: false,
     dryRun: false,
     all: false,
+    fetchTagged: ZOHO_FETCH_TAGGED,
     searchKey: MAIL_SEARCH_KEY,
     interval: POLL_INTERVAL_SECONDS,
-    days: MAIL_LOOKBACK_DAYS,
+    days: HISTORIC_DAYS,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -21,6 +29,8 @@ function parseArgs(argv) {
     if (arg === "--once") args.once = true;
     else if (arg === "--loop") args.loop = true;
     else if (arg === "--dry-run") args.dryRun = true;
+    else if (arg === "--fetch-tagged" || arg === "--tagged-only") args.fetchTagged = true;
+    else if (arg === "--all-emails" || arg === "--no-tag-filter") args.fetchTagged = false;
     else if (arg === "--all") {
       args.all = true;
       args.searchKey = "";
@@ -89,43 +99,132 @@ export async function processMessage(mail, sheets, messageRef, { dryRun = false 
   }
 
   if (await sheets.isDuplicate(tab, row)) {
+    console.log(`Skipping duplicate message: ${messageRef.messageId}`);
     if (!dryRun) {
-      await mail.markProcessed(messageRef);
+      try {
+        await mail.markProcessed(messageRef);
+      } catch (tagErr) {
+        console.warn(
+          `[WARNING] Failed to tag duplicate email ${messageRef.messageId}: ${tagErr.message}`
+        );
+      }
     }
-    return `skip duplicate: ${email.subject.slice(0, 60)} (${tab})`;
+    return {
+      status: "duplicate",
+      text: `Skipping duplicate message: ${messageRef.messageId}`,
+    };
   }
 
   if (dryRun) {
-    return `dry-run: would append to ${tab} -> ${email.subject.slice(0, 60)}`;
+    return {
+      status: "dry_run",
+      text: `dry-run: would insert into ${tab} -> ${email.subject.slice(0, 60)}`,
+    };
   }
 
+  // 1. Insert into Zoho Sheet FIRST
   await sheets.appendRow(tab, row);
-  await mail.markProcessed(messageRef);
-  return `processed: ${email.subject.slice(0, 60)} -> ${tab}`;
+
+  // 2. ONLY tag as processed AFTER Sheet insertion succeeds
+  let tagWarning = false;
+  try {
+    await mail.markProcessed(messageRef);
+  } catch (tagErr) {
+    tagWarning = true;
+    console.warn(
+      `[WARNING] Sheet row inserted successfully, but failed to apply tag "${ZOHO_MAIL_TAG}" to message ${messageRef.messageId}: ${tagErr.message}`
+    );
+  }
+
+  return {
+    status: tagWarning ? "inserted_untagged" : "processed",
+    text: `processed: ${email.subject.slice(0, 60)} -> ${tab}`,
+  };
 }
 
 export async function runOnce({
   dryRun = false,
   searchKey = MAIL_SEARCH_KEY,
-  days = MAIL_LOOKBACK_DAYS,
+  days = HISTORIC_DAYS,
+  fetchTagged = ZOHO_FETCH_TAGGED,
 } = {}) {
   const mail = new MailClient();
   const sheets = new SheetsClient();
   if (!dryRun) await sheets.ensureTabs();
 
-  const messages = await mail.listMessages({ searchKey, days });
+  if (fetchTagged) {
+    console.log(
+      `Tagged-only mode enabled (ZOHO_FETCH_TAGGED=true) — processing ONLY emails tagged with "${ZOHO_MAIL_TAG}".`
+    );
+  } else {
+    console.log(
+      `Untagged-only mode enabled (ZOHO_FETCH_TAGGED=false) — skipping emails tagged with "${ZOHO_MAIL_TAG}".`
+    );
+  }
+
+  const messages = await mail.listMessages({
+    searchKey,
+    days,
+    fetchTagged,
+  });
+
   const results = [];
+
+  let candidatesCount = messages.stats?.candidateCount ?? messages.length;
+  let taggedFoundCount = messages.stats?.taggedCount ?? messages.length;
+  let skippedUntaggedCount = messages.stats?.skippedUntaggedCount ?? 0;
+  let skippedTaggedCount = messages.stats?.skippedTaggedCount ?? 0;
+  let processedCount = 0;
+  let duplicatesCount = 0;
+  let insertedCount = 0;
+  let failedCount = 0;
+
   for (const messageRef of messages) {
     try {
-      results.push(await processMessage(mail, sheets, messageRef, { dryRun }));
+      const outcome = await processMessage(mail, sheets, messageRef, { dryRun });
+      results.push(outcome.text);
+
+      if (outcome.status === "processed") {
+        processedCount++;
+        insertedCount++;
+      } else if (outcome.status === "inserted_untagged") {
+        processedCount++;
+        insertedCount++;
+      } else if (outcome.status === "duplicate") {
+        duplicatesCount++;
+      } else if (outcome.status === "dry_run") {
+        processedCount++;
+      }
     } catch (error) {
-      // Leave the message unlabelled so the next run retries it; sheet dedupe
-      // stops it being appended twice if the row already landed.
-      results.push(
-        `error: ${messageRef.subject.slice(0, 60)} -> ${error.message}`
+      failedCount++;
+      const errMsg = `error: ${messageRef.subject?.slice(0, 60) || messageRef.messageId} -> ${error.message}`;
+      console.error(`[ERROR] ${errMsg}`);
+      console.error(
+        `[ERROR] Sheet insert failed -> email was NOT tagged (message ID: ${messageRef.messageId})`
       );
+      results.push(errMsg);
     }
   }
+
+  console.log("\n==================================================");
+  console.log(
+    `Sync Mode: ${fetchTagged ? `Tagged Only (ZOHO_FETCH_TAGGED=true, tag: "${ZOHO_MAIL_TAG}")` : `Untagged Only (ZOHO_FETCH_TAGGED=false, tag: "${ZOHO_MAIL_TAG}")`}`
+  );
+  console.log(`Historical window: last ${days} days`);
+  console.log(`Candidate emails inspected: ${candidatesCount}`);
+  if (fetchTagged) {
+    console.log(`Tagged emails found: ${taggedFoundCount}`);
+    console.log(`Untagged emails skipped: ${skippedUntaggedCount}`);
+  } else {
+    console.log(`Untagged emails found: ${candidatesCount - skippedTaggedCount}`);
+    console.log(`Tagged emails skipped: ${skippedTaggedCount}`);
+  }
+  console.log(`Processed: ${processedCount} emails`);
+  console.log(`Duplicates skipped (Sheet): ${duplicatesCount}`);
+  console.log(`Inserted into Zoho Sheet: ${insertedCount} rows`);
+  console.log(`Failed: ${failedCount} emails`);
+  console.log("==================================================\n");
+
   return results;
 }
 
@@ -133,9 +232,8 @@ export async function runLoop({
   dryRun = false,
   interval = POLL_INTERVAL_SECONDS,
   days = MAIL_LOOKBACK_DAYS,
+  fetchTagged = ZOHO_FETCH_TAGGED,
 } = {}) {
-  // Print before any network call so the logs prove the process booted, even if
-  // something kills the container mid-cycle.
   console.log(
     `poller started — interval ${interval}s, lookback ${days}d, node ${process.version}, pid ${process.pid}`
   );
@@ -144,12 +242,10 @@ export async function runLoop({
     const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
     console.log(`[${new Date().toISOString()}] cycle start (rss ${rssMb} MB)`);
     try {
-      const results = await runOnce({ dryRun, days });
+      const results = await runOnce({ dryRun, days, fetchTagged });
       for (const line of results) console.log(line);
       if (!results.length) console.log("No new messages.");
     } catch (error) {
-      // A whole cycle failed (network, token refresh, Zoho outage). Keep the
-      // poller alive — the next cycle picks up whatever was missed.
       console.error(`[${new Date().toISOString()}] cycle failed: ${error.message}`);
     }
     await new Promise((resolve) => setTimeout(resolve, interval * 1000));
@@ -164,6 +260,7 @@ async function main() {
       dryRun: args.dryRun,
       searchKey: args.searchKey,
       days: args.days,
+      fetchTagged: args.fetchTagged,
     });
     for (const line of results) console.log(line);
     if (!results.length) {
@@ -172,10 +269,19 @@ async function main() {
     return;
   }
 
-  await runLoop({ dryRun: args.dryRun, interval: args.interval, days: args.days });
+  await runLoop({
+    dryRun: args.dryRun,
+    interval: args.interval,
+    days: args.days,
+    fetchTagged: args.fetchTagged,
+  });
 }
 
 main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
+
+
+
+
