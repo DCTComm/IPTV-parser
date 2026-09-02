@@ -44,6 +44,7 @@ function isWithinLookback(message, cutoffMs) {
 }
 
 function matchesPaypalSender(fromAddress = "") {
+  if (!PAYPAL_SENDER) return true;
   return fromAddress.toLowerCase().includes(PAYPAL_SENDER.toLowerCase());
 }
 
@@ -87,38 +88,66 @@ export class MailClient {
     const matches = [];
     let start = 1;
 
-    while (matches.length < maxResults) {
-      const params = new URLSearchParams({
-        searchKey: fullSearchKey,
-        start: String(start),
-        limit: String(limit),
-        includeto: "true",
-        receivedTime: String(Date.now()),
-      });
+    console.log(
+      `[DEBUG] Active searchKey: "${fullSearchKey || "(none - fetching all)"}" | Lookback: ${days ? `${days} day(s)` : "all time"}`
+    );
 
-      const response = await zohoRequest(
-        MAIL_API_URL,
-        `/api/accounts/${accountId}/messages/search?${params}`
+    while (matches.length < maxResults) {
+      let endpoint;
+      if (fullSearchKey) {
+        const params = new URLSearchParams({
+          searchKey: fullSearchKey,
+          start: String(start),
+          limit: String(limit),
+          includeto: "true",
+        });
+        endpoint = `/api/accounts/${accountId}/messages/search?${params}`;
+      } else {
+        const params = new URLSearchParams({
+          start: String(start),
+          limit: String(limit),
+        });
+        endpoint = `/api/accounts/${accountId}/messages/view?${params}`;
+      }
+
+      const response = await zohoRequest(MAIL_API_URL, endpoint);
+      const messages = response.data || [];
+      console.log(
+        `[DEBUG] Zoho API returned ${messages.length} message(s) from ${endpoint.split("?")[0]}`
       );
 
-      const messages = response.data || [];
       if (!messages.length) break;
 
       let reachedOlderMessages = false;
       for (const message of messages) {
+        const msgDateStr = parseEmailDate(message.receivedtime || message.receivedTime);
+        const from = message.fromAddress || message.sender || "";
+        const subj = message.subject || "";
+
+        console.log(
+          `[DEBUG] Message: ID=${message.messageId} | Date=${msgDateStr} | From="${from}" | Subject="${subj}"`
+        );
+
         if (!isWithinLookback(message, cutoffMs)) {
+          console.log(`[DEBUG]   └─ Skipped: received date is outside lookback window (${days} days)`);
           reachedOlderMessages = true;
           continue;
         }
-        if (!matchesPaypalSender(message.fromAddress)) continue;
-        if (hasProcessedLabel(message, processedLabelId)) continue;
+        if (!matchesPaypalSender(from)) {
+          console.log(`[DEBUG]   └─ Skipped: sender does not match PAYPAL_SENDER ("${PAYPAL_SENDER}")`);
+          continue;
+        }
+        if (hasProcessedLabel(message, processedLabelId)) {
+          console.log(`[DEBUG]   └─ Skipped: already has processed label (${PROCESSED_LABEL})`);
+          continue;
+        }
 
         matches.push({
           messageId: String(message.messageId),
           folderId: String(message.folderId),
           subject: message.subject || "",
-          emailDate: parseEmailDate(message.receivedtime || message.receivedTime),
-          fromAddr: message.fromAddress || "",
+          emailDate: msgDateStr,
+          fromAddr: from,
           snippet: message.summary || "",
         });
 
@@ -129,6 +158,7 @@ export class MailClient {
       start += limit;
     }
 
+    console.log(`[DEBUG] Total matching messages found: ${matches.length}`);
     return matches;
   }
 

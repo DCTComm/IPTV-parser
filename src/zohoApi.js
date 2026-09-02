@@ -231,23 +231,29 @@ export async function getAccessToken() {
     return tokenCache.access_token;
   }
 
-  // Reuse the cached token so a container without token.json doesn't refresh
-  // on every single API call.
+  // 1. Try in-memory cache, then token.json on disk
   let token = tokenCache || (await loadTokenFile());
-  if ((!token || !token.refresh_token) && ZOHO_REFRESH_TOKEN) {
-    token = { ...token, refresh_token: ZOHO_REFRESH_TOKEN };
+
+  // 2. Resolve refresh token from token.json or ZOHO_REFRESH_TOKEN (.env)
+  const effectiveRefreshToken =
+    token?.refresh_token || ZOHO_REFRESH_TOKEN || (process.env.ZOHO_REFRESH_TOKEN || "").trim().replace(/^["']|["']$/g, "");
+
+  if (effectiveRefreshToken) {
+    token = { ...(token || {}), refresh_token: effectiveRefreshToken };
   }
 
-  if (!token) {
+  // 3. If no refresh token is found in either source, fall back to interactive auth
+  if (!token || !token.refresh_token) {
     if (!process.stdin.isTTY) {
       throw new Error(
-        "No Zoho credentials available. Set ZOHO_REFRESH_TOKEN, or point TOKEN_PATH " +
+        "No Zoho credentials available. Set ZOHO_REFRESH_TOKEN in .env, or point TOKEN_PATH " +
         `at a persistent file (currently ${TOKEN_PATH}). Interactive login needs a ` +
         'terminal — run "npm run auth" locally and copy the refresh token.'
       );
     }
     token = await authorizeInteractive();
   } else if (!token.expires_at || token.expires_at <= Date.now() + 60_000) {
+    // 4. Silently generate/refresh access token using the refresh token
     const refreshed = await refreshAccessToken(token.refresh_token);
     token = {
       ...token,

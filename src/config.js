@@ -12,8 +12,10 @@ export const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID || "";
 export const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET || "";
 export const ZOHO_REDIRECT_URI =
   process.env.ZOHO_REDIRECT_URI || "http://localhost:3000/oauth/callback";
-/** Set in deployments where token.json can't persist (containers). */
-export const ZOHO_REFRESH_TOKEN = process.env.ZOHO_REFRESH_TOKEN || "";
+/** Set in deployments where token.json can't persist (containers) or for pre-shared refresh tokens. */
+export const ZOHO_REFRESH_TOKEN = (process.env.ZOHO_REFRESH_TOKEN || "")
+  .trim()
+  .replace(/^["']|["']$/g, "");
 
 export const ACCOUNTS_URL = `https://accounts.zoho.${ZOHO_DC}`;
 export const MAIL_API_URL = `https://mail.zoho.${ZOHO_DC}`;

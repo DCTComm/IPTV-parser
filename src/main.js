@@ -10,6 +10,7 @@ function parseArgs(argv) {
     once: false,
     loop: false,
     dryRun: false,
+    all: false,
     searchKey: MAIL_SEARCH_KEY,
     interval: POLL_INTERVAL_SECONDS,
     days: MAIL_LOOKBACK_DAYS,
@@ -20,9 +21,26 @@ function parseArgs(argv) {
     if (arg === "--once") args.once = true;
     else if (arg === "--loop") args.loop = true;
     else if (arg === "--dry-run") args.dryRun = true;
-    else if (arg === "--search-key") args.searchKey = argv[++i];
-    else if (arg === "--interval") args.interval = Number(argv[++i]);
-    else if (arg === "--days") args.days = Number(argv[++i]);
+    else if (arg === "--all") {
+      args.all = true;
+      args.searchKey = "";
+    } else if (arg.startsWith("--search-key=")) {
+      args.searchKey = arg.slice("--search-key=".length);
+    } else if (arg === "--search-key") {
+      args.searchKey = argv[++i] ?? "";
+    } else if (arg.startsWith("--interval=")) {
+      args.interval = Number(arg.slice("--interval=".length));
+    } else if (arg === "--interval") {
+      args.interval = Number(argv[++i]);
+    } else if (arg.startsWith("--days=")) {
+      args.days = Number(arg.slice("--days=".length));
+    } else if (arg === "--days") {
+      args.days = Number(argv[++i]);
+    }
+  }
+
+  if (args.searchKey === "all" || args.searchKey === "none") {
+    args.searchKey = "";
   }
 
   return args;
